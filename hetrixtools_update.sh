@@ -1,8 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 #
 #	HetrixTools Server Monitoring Agent - Update Script
-#	Copyright 2015 - 2024 @  HetrixTools
+#	Copyright 2015 - 2025 @  HetrixTools
 #	For support, please open a ticket on our website https://hetrixtools.com
 #
 #
@@ -20,6 +20,9 @@
 
 # Set PATH
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Detect OS
+OS=$(uname -s)
 
 # Old Agent Path
 AGENT="/etc/hetrixtools/hetrixtools_agent.sh"
@@ -114,7 +117,11 @@ echo "... done."
 
 # Inserting Server ID (SID) into the agent config
 echo "Inserting Server ID (SID) into agent config..."
-sed -i "s/SID=\"\"/SID=\"$SID\"/" /etc/hetrixtools/hetrixtools.cfg
+if [ "$OS" = "FreeBSD" ]; then
+    sed -i '' "s/SID=\"\"/SID=\"$SID\"/" /etc/hetrixtools/hetrixtools.cfg
+else
+    sed -i "s/SID=\"\"/SID=\"$SID\"/" /etc/hetrixtools/hetrixtools.cfg
+fi
 echo "... done."
 
 # Check if any network interfaces are specified
@@ -122,7 +129,11 @@ echo "Checking if any network interfaces are specified..."
 if [ ! -z "$NetworkInterfaces" ]
 then
 	echo "Network interfaces found, inserting them into the agent config..."
-	sed -i "s/NetworkInterfaces=\"\"/NetworkInterfaces=\"$NetworkInterfaces\"/" /etc/hetrixtools/hetrixtools.cfg
+	if [ "$OS" = "FreeBSD" ]; then
+        sed -i '' "s/NetworkInterfaces=\"\"/NetworkInterfaces=\"$NetworkInterfaces\"/" /etc/hetrixtools/hetrixtools.cfg
+    else
+        sed -i "s/NetworkInterfaces=\"\"/NetworkInterfaces=\"$NetworkInterfaces\"/" /etc/hetrixtools/hetrixtools.cfg
+    fi
 fi
 
 # Check if any services are to be monitored
@@ -130,7 +141,11 @@ echo "Checking if any services should be monitored..."
 if [ ! -z "$CheckServices" ]
 then
 	echo "Services found, inserting them into the agent config..."
-	sed -i "s/CheckServices=\"\"/CheckServices=\"$CheckServices\"/" /etc/hetrixtools/hetrixtools.cfg
+	if [ "$OS" = "FreeBSD" ]; then
+        sed -i '' "s/CheckServices=\"\"/CheckServices=\"$CheckServices\"/" /etc/hetrixtools/hetrixtools.cfg
+    else
+        sed -i "s/CheckServices=\"\"/CheckServices=\"$CheckServices\"/" /etc/hetrixtools/hetrixtools.cfg
+    fi
 fi
 echo "... done."
 
@@ -139,7 +154,11 @@ echo "Checking if software RAID should be monitored..."
 if [ "$CheckSoftRAID" -eq "1" ]
 then
 	echo "Enabling software RAID monitoring in the agent config..."
-	sed -i "s/CheckSoftRAID=0/CheckSoftRAID=1/" /etc/hetrixtools/hetrixtools.cfg
+	if [ "$OS" = "FreeBSD" ]; then
+        sed -i '' "s/CheckSoftRAID=0/CheckSoftRAID=1/" /etc/hetrixtools/hetrixtools.cfg
+    else
+        sed -i "s/CheckSoftRAID=0/CheckSoftRAID=1/" /etc/hetrixtools/hetrixtools.cfg
+    fi
 fi
 echo "... done."
 
@@ -148,7 +167,11 @@ echo "Checking if Drive Health should be monitored..."
 if [ "$CheckDriveHealth" -eq "1" ]
 then
 	echo "Enabling Drive Health monitoring in the agent config..."
-	sed -i "s/CheckDriveHealth=0/CheckDriveHealth=1/" /etc/hetrixtools/hetrixtools.cfg
+	if [ "$OS" = "FreeBSD" ]; then
+        sed -i '' "s/CheckDriveHealth=0/CheckDriveHealth=1/" /etc/hetrixtools/hetrixtools.cfg
+    else
+        sed -i "s/CheckDriveHealth=0/CheckDriveHealth=1/" /etc/hetrixtools/hetrixtools.cfg
+    fi
 fi
 echo "... done."
 
@@ -157,7 +180,11 @@ echo "Checking if 'View running processes' should be enabled..."
 if [ "$RunningProcesses" -eq "1" ]
 then
 	echo "Enabling 'View running processes' in the agent config..."
-	sed -i "s/RunningProcesses=0/RunningProcesses=1/" /etc/hetrixtools/hetrixtools.cfg
+	if [ "$OS" = "FreeBSD" ]; then
+        sed -i '' "s/RunningProcesses=0/RunningProcesses=1/" /etc/hetrixtools/hetrixtools.cfg
+    else
+        sed -i "s/RunningProcesses=0/RunningProcesses=1/" /etc/hetrixtools/hetrixtools.cfg
+    fi
 fi
 echo "... done."
 
@@ -166,7 +193,11 @@ echo "Checking if any ports to monitor number of connections on..."
 if [ ! -z "$ConnectionPorts" ]
 then
 	echo "Ports found, inserting them into the agent config..."
-	sed -i "s/ConnectionPorts=\"\"/ConnectionPorts=\"$ConnectionPorts\"/" /etc/hetrixtools/hetrixtools.cfg
+	if [ "$OS" = "FreeBSD" ]; then
+        sed -i '' "s/ConnectionPorts=\"\"/ConnectionPorts=\"$ConnectionPorts\"/" /etc/hetrixtools/hetrixtools.cfg
+    else
+        sed -i "s/ConnectionPorts=\"\"/ConnectionPorts=\"$ConnectionPorts\"/" /etc/hetrixtools/hetrixtools.cfg
+    fi
 fi
 echo "... done."
 
@@ -175,7 +206,11 @@ echo "Checking if any custom variables are specified..."
 if [ ! -z "$CustomVars" ]
 then
     echo "Custom variables found, inserting them into the agent config..."
-    sed -i "s/CustomVars=\"custom_variables.json\"/CustomVars=\"$CustomVars\"/" /etc/hetrixtools/hetrixtools.cfg
+    if [ "$OS" = "FreeBSD" ]; then
+        sed -i '' "s/CustomVars=\"custom_variables.json\"/CustomVars=\"$CustomVars\"/" /etc/hetrixtools/hetrixtools.cfg
+    else
+        sed -i "s/CustomVars=\"custom_variables.json\"/CustomVars=\"$CustomVars\"/" /etc/hetrixtools/hetrixtools.cfg
+    fi
 fi
 echo "... done."
 
@@ -184,7 +219,11 @@ echo "Checking if secured connection is enabled..."
 if [ ! -z "$SecuredConnection" ]
 then
     echo "Inserting secured connection in the agent config..."
-    sed -i "s/SecuredConnection=1/SecuredConnection=$SecuredConnection/" /etc/hetrixtools/hetrixtools.cfg
+    if [ "$OS" = "FreeBSD" ]; then
+        sed -i '' "s/SecuredConnection=1/SecuredConnection=$SecuredConnection/" /etc/hetrixtools/hetrixtools.cfg
+    else
+        sed -i "s/SecuredConnection=1/SecuredConnection=$SecuredConnection/" /etc/hetrixtools/hetrixtools.cfg
+    fi
 fi
 echo "... done."
 
@@ -193,12 +232,16 @@ echo "Checking CollectEveryXSeconds..."
 if [ ! -z "$CollectEveryXSeconds" ]
 then
 	echo "Inserting CollectEveryXSeconds in the agent config..."
-	sed -i "s/CollectEveryXSeconds=3/CollectEveryXSeconds=$CollectEveryXSeconds/" /etc/hetrixtools/hetrixtools.cfg
+	if [ "$OS" = "FreeBSD" ]; then
+        sed -i '' "s/CollectEveryXSeconds=3/CollectEveryXSeconds=$CollectEveryXSeconds/" /etc/hetrixtools/hetrixtools.cfg
+    else
+        sed -i "s/CollectEveryXSeconds=3/CollectEveryXSeconds=$CollectEveryXSeconds/" /etc/hetrixtools/hetrixtools.cfg
+    fi
 fi
 
 # Killing any running hetrixtools agents
 echo "Making sure no hetrixtools agent scripts are currently running..."
-ps aux | grep -ie hetrixtools_agent.sh | awk '{print $2}' | xargs kill -9
+ps aux | grep -ie hetrixtools_agent.sh | awk '{print $2}' | xargs kill -9 2>/dev/null || true
 echo "... done."
 
 # Assign permissions

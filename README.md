@@ -5,6 +5,9 @@ Documentation available here: https://docs.hetrixtools.com/category/server-monit
 
 ### Changelog
 
+#### Version 2.2.12:
+- add bsd support
+
 #### Version 2.2.11:
 - fixed an issue where, in some cases, `zpool` metrics weren't being registered properly
 
