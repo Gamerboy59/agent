@@ -1,8 +1,8 @@
-#!/usr/bin/env bash
+#!/bin/bash
 #
 #
 #	HetrixTools Server Monitoring Agent
-#	Copyright 2015 - 2025 @  HetrixTools
+#	Copyright 2015 - 2024 @  HetrixTools
 #	For support, please open a ticket on our website https://hetrixtools.com
 #
 #
@@ -22,9 +22,6 @@
 export LC_NUMERIC="C"
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ScriptPath=$(dirname "${BASH_SOURCE[0]}")
-
-# Detect OS type
-OS=$(uname -s)
 
 # Agent Version (do not change)
 Version="2.2.11"
@@ -46,27 +43,16 @@ function servicestatus() {
 	if (( $(ps -ef | grep -E "[\/ ]$1([^\/]|$)" | grep -v "grep" | wc -l) > 0 ))
 	then # Up
 		echo "1"
-	else # Down, try with service management system
-		if [ "$OS" = "FreeBSD" ]; then
-			# FreeBSD service check
-			if service "$1" status >/dev/null 2>&1; then
-				# Up
+	else # Down, try with systemctl (if available)
+		if command -v "systemctl" > /dev/null 2>&1
+		then # Use systemctl
+			if systemctl is-active --quiet "$1"
+			then # Up
 				echo "1"
-			else
-				# Down
+			else # Down
 				echo "0"
 			fi
-		elif command -v "systemctl" > /dev/null 2>&1; then
-			# Linux systemctl
-			if systemctl is-active --quiet "$1"; then
-				# Up
-				echo "1"
-			else
-				# Down
-				echo "0"
-			fi
-		else
-			# No systemctl
+		else # No systemctl
 			echo "0"
 		fi
 	fi
@@ -142,35 +128,22 @@ then
 else
 	# Automatically detect the network interfaces
 	NetworkInterfacesArray=()
-	if [ "$OS" = "FreeBSD" ]; then
-		# FreeBSD network interface detection
-		while IFS='' read -r line; do NetworkInterfacesArray+=("$line"); done < <(ifconfig -l | tr ' ' '\n' | grep -v '^lo' | grep -v '^pflog' | grep -v '^tun' | grep -v '^plip')
-	else
-		# Linux network interface detection
-		while IFS='' read -r line; do NetworkInterfacesArray+=("$line"); done < <(ip a | grep BROADCAST | grep 'state UP' | awk '{print $2}' | awk -F ":" '{print $1}' | awk -F "@" '{print $1}')
-	fi
+	while IFS='' read -r line; do NetworkInterfacesArray+=("$line"); done < <(ip a | grep BROADCAST | grep 'state UP' | awk '{print $2}' | awk -F ":" '{print $1}' | awk -F "@" '{print $1}')
 fi
 if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Network Interfaces: ${NetworkInterfacesArray[*]}" >> "$ScriptPath"/debug.log; fi
 
 # Initial network usage
+T=$(cat /proc/net/dev)
 declare -A aRX
 declare -A aTX
 declare -A tRX
 declare -A tTX
 
-# Loop through network interfaces for initial network stats
+# Loop through network interfaces
 for NIC in "${NetworkInterfacesArray[@]}"
 do
-	if [ "$OS" = "FreeBSD" ]; then
-		# FreeBSD network stats
-		aRX[$NIC]=$(netstat -I "$NIC" -b | awk 'NR==2 {print $7}')
-		aTX[$NIC]=$(netstat -I "$NIC" -b | awk 'NR==2 {print $10}')
-	else
-		# Linux network stats
-		T=$(cat /proc/net/dev)
-		aRX[$NIC]=$(echo "$T" | grep -w "$NIC:" | awk '{print $2}')
-		aTX[$NIC]=$(echo "$T" | grep -w "$NIC:" | awk '{print $10}')
-	fi
+	aRX[$NIC]=$(echo "$T" | grep -w "$NIC:" | awk '{print $2}')
+	aTX[$NIC]=$(echo "$T" | grep -w "$NIC:" | awk '{print $10}')
 	if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Network Interface $NIC RX: ${aRX[$NIC]} TX: ${aTX[$NIC]}" >> "$ScriptPath"/debug.log; fi
 done
 
@@ -179,23 +152,12 @@ if [ -n "$ConnectionPorts" ]
 then
 	IFS=',' read -r -a ConnectionPortsArray <<< "$ConnectionPorts"
 	declare -A Connections
-	
-	if [ "$OS" = "FreeBSD" ]; then
-		# FreeBSD port connections using sockstat
-		for cPort in "${ConnectionPortsArray[@]}"
-		do
-			Connections[$cPort]=$(sockstat -4l | grep ":$cPort" | wc -l)
-			if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Port $cPort Connections: ${Connections[$cPort]}" >> "$ScriptPath"/debug.log; fi
-		done
-	else
-		# Linux port connections using ss
-		netstat=$(ss -ntu | awk '{print $5}')
-		for cPort in "${ConnectionPortsArray[@]}"
-		do
-			Connections[$cPort]=$(echo "$netstat" | grep -c ":$cPort$")
-			if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Port $cPort Connections: ${Connections[$cPort]}" >> "$ScriptPath"/debug.log; fi
-		done
-	fi
+	netstat=$(ss -ntu | awk '{print $5}')
+	for cPort in "${ConnectionPortsArray[@]}"
+	do
+		Connections[$cPort]=$(echo "$netstat" | grep -c ":$cPort$")
+		if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Port $cPort Connections: ${Connections[$cPort]}" >> "$ScriptPath"/debug.log; fi
+	done
 fi
 
 # Temperature
@@ -216,195 +178,103 @@ fi
 
 # Disks IOPS
 declare -A vDISKs
-if [ "$OS" = "FreeBSD" ]; then
-	# FreeBSD disk mapping
-	for i in $(mount | grep -v '^devfs' | awk '{print $3}')
-	do
-		disk_device=$(mount | grep " $i " | awk '{print $1}')
-		disk_base=$(echo "$disk_device" | sed 's/s[0-9][a-z]$//')
-		vDISKs[$i]=$(basename "$disk_base")
-		if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Disk $i: ${vDISKs[$i]}" >> "$ScriptPath"/debug.log; fi
-	done
-	
-	# Initialize IOPS counters for FreeBSD using iostat
-	declare -A IOPSRead
-	declare -A IOPSWrite
-	iostat_output=$(iostat -x)
-	for i in "${!vDISKs[@]}"
-	do
-		IOPSRead[$i]=$(echo "$iostat_output" | grep "^${vDISKs[$i]}" | awk '{print $4}')
-		IOPSWrite[$i]=$(echo "$iostat_output" | grep "^${vDISKs[$i]}" | awk '{print $5}')
-		if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Disk $i IOPS Read: ${IOPSRead[$i]} Write: ${IOPSWrite[$i]}" >> "$ScriptPath"/debug.log; fi
-	done
-else
-	# Linux disk mapping from mountpoint to device
-	for i in $(timeout 3 df | awk '$1 ~ /\// {print}' | awk '{print $(NF)}')
-	do
-		vDISKs[$i]=$(lsblk -l | grep -w "$i" | awk '{print $1}')
-		if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Disk $i: ${vDISKs[$i]}" >> "$ScriptPath"/debug.log; fi
-	done
-	
-	# Initialize IOPS counters for Linux
-	declare -A IOPSRead
-	declare -A IOPSWrite
-	diskstats=$(cat /proc/diskstats)
-	for i in "${!vDISKs[@]}"
-	do
-		IOPSRead[$i]=$(echo "$diskstats" | grep -w "${vDISKs[$i]}" | awk '{print $6}')
-		IOPSWrite[$i]=$(echo "$diskstats" | grep -w "${vDISKs[$i]}" | awk '{print $10}')
-		if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Disk $i IOPS Read: ${IOPSRead[$i]} Write: ${IOPSWrite[$i]}" >> "$ScriptPath"/debug.log; fi
-	done
-fi
+for i in $(timeout 3 df | awk '$1 ~ /\// {print}' | awk '{print $(NF)}')
+do
+	vDISKs[$i]=$(lsblk -l | grep -w "$i" | awk '{print $1}')
+	if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Disk $i: ${vDISKs[$i]}" >> "$ScriptPath"/debug.log; fi
+done
+declare -A IOPSRead
+declare -A IOPSWrite
+diskstats=$(cat /proc/diskstats)
+for i in "${!vDISKs[@]}"
+do
+	IOPSRead[$i]=$(echo "$diskstats" | grep -w "${vDISKs[$i]}" | awk '{print $6}')
+	IOPSWrite[$i]=$(echo "$diskstats" | grep -w "${vDISKs[$i]}" | awk '{print $10}')
+	if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Disk $i IOPS Read: ${IOPSRead[$i]} Write: ${IOPSWrite[$i]}" >> "$ScriptPath"/debug.log; fi
+done
 
-# Calculate how many data sample loops
+# Calculate how many how many data sample loops
 RunTimes=$(echo | awk "{print 60 / $CollectEveryXSeconds}")
 if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Collecting data for $RunTimes loops" >> "$ScriptPath"/debug.log; fi
 
 # Collect data loop
 for X in $(seq "$RunTimes")
 do
-	# Get system stats
-	if [ "$OS" = "FreeBSD" ]; then
-		# FreeBSD system stats using vmstat
-		VMSTAT=$(vmstat "$CollectEveryXSeconds" 2 | tail -1)
-		if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) $VMSTAT" >> "$ScriptPath"/debug.log; fi
-		
-		# CPU usage - FreeBSD vmstat format differs from Linux
-		CPU=$(echo "$VMSTAT" | awk '{print 100 - $18}')
-		tCPU=$(echo | awk "{print $tCPU + $CPU}")
-		
-		# CPU IO wait - FreeBSD uses different column
-		CPUwa=$(echo "$VMSTAT" | awk '{print $19}')
-		tCPUwa=$(echo | awk "{print $tCPUwa + $CPUwa}")
-		
-		# FreeBSD doesn't have CPU steal time in vmstat output, set to 0
-		CPUst=0
-		tCPUst=$(echo | awk "{print $tCPUst + $CPUst}")
+	# Get vmstat
+	VMSTAT=$(vmstat "$CollectEveryXSeconds" 2 | tail -1)
+	if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) $VMSTAT" >> "$ScriptPath"/debug.log; fi
+	
+	# CPU usage
+	CPU=$(echo "$VMSTAT" | awk '{print 100 - $15}')
+	tCPU=$(echo | awk "{print $tCPU + $CPU}")
+	
+	# CPU IO wait
+	CPUwa=$(echo "$VMSTAT" | awk '{print $16}')
+	tCPUwa=$(echo | awk "{print $tCPUwa + $CPUwa}")
+	
+	# CPU steal time
+	CPUst=$(echo "$VMSTAT" | awk '{print $17}')
+	tCPUst=$(echo | awk "{print $tCPUst + $CPUst}")
 
-		# CPU user time - FreeBSD uses different column
-		CPUus=$(echo "$VMSTAT" | awk '{print $16}')
-		tCPUus=$(echo | awk "{print $tCPUus + $CPUus}")
-		
-		# CPU system time - FreeBSD uses different column
-		CPUsy=$(echo "$VMSTAT" | awk '{print $17}')
-		tCPUsy=$(echo | awk "{print $tCPUsy + $CPUsy}")
-		
-		# CPU clock - FreeBSD uses sysctl instead of /proc/cpuinfo
-		CPUSpeed=$(sysctl -n dev.cpu.0.freq 2>/dev/null)
-		if [ -z "$CPUSpeed" ]; then
-			CPUSpeed=0
-		fi
-		tCPUSpeed=$(echo | awk "{print $tCPUSpeed + $CPUSpeed}")
-
-		# CPU Load - FreeBSD uses sysctl instead of /proc/loadavg
-		loadavg1=$(sysctl -n vm.loadavg | awk '{print $2}')
-		tloadavg1=$(echo | awk "{print $tloadavg1 + $loadavg1}")
-		loadavg5=$(sysctl -n vm.loadavg | awk '{print $3}')
-		tloadavg5=$(echo | awk "{print $tloadavg5 + $loadavg5}")
-		loadavg15=$(sysctl -n vm.loadavg | awk '{print $4}')
-		tloadavg15=$(echo | awk "{print $tloadavg15 + $loadavg15}")
-		
-		# RAM usage - FreeBSD memory values
-		freeMem=$(vmstat -H | tail -1 | awk '{print $5}')
-		totalMem=$(sysctl -n hw.physmem | awk '{print $1 / 1024}')
-		aRAM=$freeMem
-		bRAM=$totalMem
-		RAM=$(echo | awk "{print ($bRAM - $aRAM) * 100 / $bRAM}")
-		tRAM=$(echo | awk "{print $tRAM + $RAM}")
-		
-		# RAM swap usage - FreeBSD swap values
-		swapInfo=$(swapinfo | grep "Total" | awk '{print $2, $3}')
-		swapTotal=$(echo "$swapInfo" | awk '{print $1}')
-		swapUsed=$(echo "$swapInfo" | awk '{print $2}')
-		if [ -n "$swapTotal" ] && [ "$swapTotal" -gt 0 ]; then
-			RAMSwap=$(echo | awk "{print $swapUsed * 100 / $swapTotal}")
-		else
-			RAMSwap=0
-		fi
-		tRAMSwap=$(echo | awk "{print $tRAMSwap + $RAMSwap}")
-		
-		# FreeBSD doesn't separate buffers and cache in the same way
-		# Set default values
-		RAMBuff=0
-		tRAMBuff=$(echo | awk "{print $tRAMBuff + $RAMBuff}")
-		
-		RAMCache=0
-		tRAMCache=$(echo | awk "{print $tRAMCache + $RAMCache}")
-	else
-		# Linux system stats
-		VMSTAT=$(vmstat "$CollectEveryXSeconds" 2 | tail -1)
-		if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) $VMSTAT" >> "$ScriptPath"/debug.log; fi
-		
-		# CPU usage
-		CPU=$(echo "$VMSTAT" | awk '{print 100 - $15}')
-		tCPU=$(echo | awk "{print $tCPU + $CPU}")
-		
-		# CPU IO wait
-		CPUwa=$(echo "$VMSTAT" | awk '{print $16}')
-		tCPUwa=$(echo | awk "{print $tCPUwa + $CPUwa}")
-		
-		# CPU steal time
-		CPUst=$(echo "$VMSTAT" | awk '{print $17}')
-		tCPUst=$(echo | awk "{print $tCPUst + $CPUst}")
-
-		# CPU user time
-		CPUus=$(echo "$VMSTAT" | awk '{print $13}')
-		tCPUus=$(echo | awk "{print $tCPUus + $CPUus}")
-		
-		# CPU system time
-		CPUsy=$(echo "$VMSTAT" | awk '{print $14}')
-		tCPUsy=$(echo | awk "{print $tCPUsy + $CPUsy}")
-		
-		# CPU clock
-		CPUSpeed=$(grep 'cpu MHz' /proc/cpuinfo | awk -F": " '{print $2}' | awk '{printf "%18.0f",$1}' | xargs | sed -e 's/ /+/g')
-		if [ -z "$CPUSpeed" ]
-		then
-			CPUSpeed=0
-		fi
-		tCPUSpeed=$(echo | awk "{print $tCPUSpeed + $CPUSpeed}")
-
-		# CPU Load
-		loadavg=$(cat /proc/loadavg)
-		loadavg1=$(echo "$loadavg" | awk '{print $1}')
-		tloadavg1=$(echo | awk "{print $tloadavg1 + $loadavg1}")
-		loadavg5=$(echo "$loadavg" | awk '{print $2}')
-		tloadavg5=$(echo | awk "{print $tloadavg5 + $loadavg5}")
-		loadavg15=$(echo "$loadavg" | awk '{print $3}')
-		tloadavg15=$(echo | awk "{print $tloadavg15 + $loadavg15}")
-		
-		# RAM usage
-		aRAM=$(echo "$VMSTAT" | awk '{print $4 + $5 + $6}')
-		bRAM=$(grep "^MemTotal:" /proc/meminfo | awk '{print $2}')
-		RAM=$(echo | awk "{print $aRAM * 100 / $bRAM}")
-		RAM=$(echo | awk "{print 100 - $RAM}")
-		tRAM=$(echo | awk "{print $tRAM + $RAM}")
-
-		# RAM swap usage
-		aRAMSwap=$(echo "$VMSTAT" | awk '{print $3}')
-		cRAM=$(grep "^SwapTotal:" /proc/meminfo | awk '{print $2}')
-		if [ "$cRAM" -gt 0 ]
-		then
-			RAMSwap=$(echo | awk "{print $aRAMSwap * 100 / $cRAM}")
-		else
-			RAMSwap=0
-		fi
-		tRAMSwap=$(echo | awk "{print $tRAMSwap + $RAMSwap}")
-		
-		# RAM buffers usage
-		aRAMBuff=$(echo "$VMSTAT" | awk '{print $5}')
-		RAMBuff=$(echo | awk "{print $aRAMBuff * 100 / $bRAM}")
-		tRAMBuff=$(echo | awk "{print $tRAMBuff + $RAMBuff}")
-		
-		# RAM cache usage
-		aRAMCache=$(echo "$VMSTAT" | awk '{print $6}')
-		RAMCache=$(echo | awk "{print $aRAMCache * 100 / $bRAM}")
-		tRAMCache=$(echo | awk "{print $tRAMCache + $RAMCache}")
+	# CPU user time
+	CPUus=$(echo "$VMSTAT" | awk '{print $13}')
+	tCPUus=$(echo | awk "{print $tCPUus + $CPUus}")
+	
+	# CPU system time
+	CPUsy=$(echo "$VMSTAT" | awk '{print $14}')
+	tCPUsy=$(echo | awk "{print $tCPUsy + $CPUsy}")
+	
+	# CPU clock
+	CPUSpeed=$(grep 'cpu MHz' /proc/cpuinfo | awk -F": " '{print $2}' | awk '{printf "%18.0f",$1}' | xargs | sed -e 's/ /+/g')
+	if [ -z "$CPUSpeed" ]
+	then
+		CPUSpeed=0
 	fi
+	tCPUSpeed=$(echo | awk "{print $tCPUSpeed + $CPUSpeed}")
+
+	# CPU Load
+	loadavg=$(cat /proc/loadavg)
+	loadavg1=$(echo "$loadavg" | awk '{print $1}')
+	tloadavg1=$(echo | awk "{print $tloadavg1 + $loadavg1}")
+	loadavg5=$(echo "$loadavg" | awk '{print $2}')
+	tloadavg5=$(echo | awk "{print $tloadavg5 + $loadavg5}")
+	loadavg15=$(echo "$loadavg" | awk '{print $3}')
+	tloadavg15=$(echo | awk "{print $tloadavg15 + $loadavg15}")
 
 	if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) CPU: $CPU IO wait: $CPUwa Steal time: $CPUst User time: $CPUus System time: $CPUsy Load: $loadavg1 $loadavg5 $loadavg15" >> "$ScriptPath"/debug.log; fi
+	
+	# RAM usage
+	aRAM=$(echo "$VMSTAT" | awk '{print $4 + $5 + $6}')
+	bRAM=$(grep "^MemTotal:" /proc/meminfo | awk '{print $2}')
+	RAM=$(echo | awk "{print $aRAM * 100 / $bRAM}")
+	RAM=$(echo | awk "{print 100 - $RAM}")
+	tRAM=$(echo | awk "{print $tRAM + $RAM}")
+
+	# RAM swap usage
+	aRAMSwap=$(echo "$VMSTAT" | awk '{print $3}')
+	cRAM=$(grep "^SwapTotal:" /proc/meminfo | awk '{print $2}')
+	if [ "$cRAM" -gt 0 ]
+	then
+		RAMSwap=$(echo | awk "{print $aRAMSwap * 100 / $cRAM}")
+	else
+		RAMSwap=0
+	fi
+	tRAMSwap=$(echo | awk "{print $tRAMSwap + $RAMSwap}")
+	
+	# RAM buffers usage
+	aRAMBuff=$(echo "$VMSTAT" | awk '{print $5}')
+	RAMBuff=$(echo | awk "{print $aRAMBuff * 100 / $bRAM}")
+	tRAMBuff=$(echo | awk "{print $tRAMBuff + $RAMBuff}")
+	
+	# RAM cache usage
+	aRAMCache=$(echo "$VMSTAT" | awk '{print $6}')
+	RAMCache=$(echo | awk "{print $aRAMCache * 100 / $bRAM}")
+	tRAMCache=$(echo | awk "{print $tRAMCache + $RAMCache}")
+
 	if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) RAM: $RAM Swap: $RAMSwap Buffers: $RAMBuff Cache: $RAMCache" >> "$ScriptPath"/debug.log; fi
 	
 	# Network usage
+	T=$(cat /proc/net/dev)
 	END=$(date +%s)
 	TIMEDIFF=$(echo | awk "{print $END - $START}")
 	tTIMEDIFF=$(echo | awk "{print $tTIMEDIFF + $TIMEDIFF}")
@@ -413,47 +283,20 @@ do
 	# Loop through network interfaces
 	for NIC in "${NetworkInterfacesArray[@]}"
 	do
-		if [ "$OS" = "FreeBSD" ]; then
-			# FreeBSD network stats
-			current_stats=$(netstat -I "$NIC" -b | awk 'NR==2 {print $7, $10}')
-			current_rx=$(echo "$current_stats" | awk '{print $1}')
-			current_tx=$(echo "$current_stats" | awk '{print $2}')
-			
-			# Calculate RX
-			RX=$(echo | awk "{print $current_rx - ${aRX[$NIC]}}")
-			RX=$(echo | awk "{print $RX / $TIMEDIFF}")
-			RX=$(echo "$RX" | awk '{printf "%18.0f",$1}' | xargs)
-			aRX[$NIC]=$current_rx
-			tRX[$NIC]=$(echo | awk "{print ${tRX[$NIC]} + $RX}")
-			tRX[$NIC]=$(echo "${tRX[$NIC]}" | awk '{printf "%18.0f",$1}' | xargs)
-			
-			# Calculate TX
-			TX=$(echo | awk "{print $current_tx - ${aTX[$NIC]}}")
-			TX=$(echo | awk "{print $TX / $TIMEDIFF}")
-			TX=$(echo "$TX" | awk '{printf "%18.0f",$1}' | xargs)
-			aTX[$NIC]=$current_tx
-			tTX[$NIC]=$(echo | awk "{print ${tTX[$NIC]} + $TX}")
-			tTX[$NIC]=$(echo "${tTX[$NIC]}" | awk '{printf "%18.0f",$1}' | xargs)
-		else
-			# Linux network stats
-			T=$(cat /proc/net/dev)
-			
-			# Received Traffic
-			RX=$(echo | awk "{print $(echo "$T" | grep -w "$NIC:" | awk '{print $2}') - ${aRX[$NIC]}}")
-			RX=$(echo | awk "{print $RX / $TIMEDIFF}")
-			RX=$(echo "$RX" | awk '{printf "%18.0f",$1}' | xargs)
-			aRX[$NIC]=$(echo "$T" | grep -w "$NIC:" | awk '{print $2}')
-			tRX[$NIC]=$(echo | awk "{print ${tRX[$NIC]} + $RX}")
-			tRX[$NIC]=$(echo "${tRX[$NIC]}" | awk '{printf "%18.0f",$1}' | xargs)
-			
-			# Transferred Traffic
-			TX=$(echo | awk "{print $(echo "$T" | grep -w "$NIC:" | awk '{print $10}') - ${aTX[$NIC]}}")
-			TX=$(echo | awk "{print $TX / $TIMEDIFF}")
-			TX=$(echo "$TX" | awk '{printf "%18.0f",$1}' | xargs)
-			aTX[$NIC]=$(echo "$T" | grep -w "$NIC:" | awk '{print $10}')
-			tTX[$NIC]=$(echo | awk "{print ${tTX[$NIC]} + $TX}")
-			tTX[$NIC]=$(echo "${tTX[$NIC]}" | awk '{printf "%18.0f",$1}' | xargs)
-		fi
+		# Received Traffic
+		RX=$(echo | awk "{print $(echo "$T" | grep -w "$NIC:" | awk '{print $2}') - ${aRX[$NIC]}}")
+		RX=$(echo | awk "{print $RX / $TIMEDIFF}")
+		RX=$(echo "$RX" | awk '{printf "%18.0f",$1}' | xargs)
+		aRX[$NIC]=$(echo "$T" | grep -w "$NIC:" | awk '{print $2}')
+		tRX[$NIC]=$(echo | awk "{print ${tRX[$NIC]} + $RX}")
+		tRX[$NIC]=$(echo "${tRX[$NIC]}" | awk '{printf "%18.0f",$1}' | xargs)
+		# Transferred Traffic
+		TX=$(echo | awk "{print $(echo "$T" | grep -w "$NIC:" | awk '{print $10}') - ${aTX[$NIC]}}")
+		TX=$(echo | awk "{print $TX / $TIMEDIFF}")
+		TX=$(echo "$TX" | awk '{printf "%18.0f",$1}' | xargs)
+		aTX[$NIC]=$(echo "$T" | grep -w "$NIC:" | awk '{print $10}')
+		tTX[$NIC]=$(echo | awk "{print ${tTX[$NIC]} + $TX}")
+		tTX[$NIC]=$(echo "${tTX[$NIC]}" | awk '{printf "%18.0f",$1}' | xargs)
 	done
 
 	if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Network Traffic: ${tRX[*]} ${tTX[*]}" >> "$ScriptPath"/debug.log; fi
@@ -461,123 +304,94 @@ do
 	# Port connections
 	if [ -n "$ConnectionPorts" ]
 	then
-		if [ "$OS" = "FreeBSD" ]; then
-			# FreeBSD port connection count
-			for cPort in "${ConnectionPortsArray[@]}"
-			do
-				Connections[$cPort]=$(echo | awk "{print ${Connections[$cPort]} + $(sockstat -4l | grep \":$cPort\" | wc -l)}")
-			done
-		else
-			# Linux port connection count
-			netstat=$(ss -ntu | awk '{print $5}')
-			for cPort in "${ConnectionPortsArray[@]}"
-			do
-				Connections[$cPort]=$(echo | awk "{print ${Connections[$cPort]} + $(echo "$netstat" | grep -c ":$cPort$")}")
-			done
-		fi
+		netstat=$(ss -ntu | awk '{print $5}')
+		for cPort in "${ConnectionPortsArray[@]}"
+		do
+			Connections[$cPort]=$(echo | awk "{print ${Connections[$cPort]} + $(echo "$netstat" | grep -c ":$cPort$")}")
+		done
 		if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Port Connections: ${Connections[*]}" >> "$ScriptPath"/debug.log; fi
 	fi
 
-	# Temperature monitoring
-	if [ "$OS" = "FreeBSD" ]; then
-		# FreeBSD temperature monitoring
-		if command -v "sysctl" > /dev/null 2>&1; then
-			# Check for temperature sensors via sysctl
-			TempSysctl=$(sysctl -a | grep -E "dev\.(cpu|aibs|acpi\.thermal)" | grep -i "temperature")
-			
-			for tempLine in $TempSysctl; do
-				if [[ "$tempLine" == *":"* ]]; then
-					TempName=$(echo "$tempLine" | awk -F":" '{print $1}' | sed 's/\./_/g')
-					TempVal=$(echo "$tempLine" | awk -F":" '{print $2}' | sed 's/[^0-9.]//g' | awk '{printf "%18.3f",$1}' | sed -e 's/\.//g' | xargs)
-					if [[ -n $TempVal ]]; then
-						TempArray[$TempName]=$((${TempArray[$TempName]:-0} + TempVal))
-						TempArrayCnt[$TempName]=$((${TempArrayCnt[$TempName]:-0} + 1))
-					fi
-				fi
-			done
-		fi
-	else
-		# Linux temperature monitoring
-		if [ "$(find /sys/class/thermal/thermal_zone*/type 2> /dev/null | wc -l)" -gt 0 ]
-		then
-			TempArrayIndex=()
-			TempArrayVal=()
-			for zone in /sys/class/thermal/thermal_zone*/
-			do
-				if [[ -f "${zone}/type" ]] && [[ -f "${zone}/temp" ]]
-				then
-					type_value=$(<"${zone}/type")
-					temp_value=$(<"${zone}/temp")
-					if [[ -n $type_value ]]
-					then
-						TempArrayIndex+=("$type_value")
-					fi
-					if [[ $temp_value =~ ^[0-9]+$ ]]
-					then
-						TempArrayVal+=("$temp_value")
-					else
-						TempArrayVal+=("0")
-					fi
-				fi
-			done
-			TempNameCnt=0
-			for TempName in "${TempArrayIndex[@]}"
-			do
-				TempArray[$TempName]=${TempArray[$TempName]:-0}
-				TempArrayCnt[$TempName]=${TempArrayCnt[$TempName]:-0}
-
-				if [[ ${TempArrayVal[$TempNameCnt]} =~ ^[0-9]+$ ]]
-				then
-					TempArray[$TempName]=$((${TempArray[$TempName]} + ${TempArrayVal[$TempNameCnt]}))
-					TempArrayCnt[$TempName]=$((TempArrayCnt[$TempName] + 1))
-				fi
-				TempNameCnt=$((TempNameCnt + 1))
-			done
-			if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Temperature thermal_zone: ${TempArray[*]}" >> "$ScriptPath"/debug.log; fi
-		else
-			if command -v "sensors" > /dev/null 2>&1
+	# Temperature
+	if [ "$(find /sys/class/thermal/thermal_zone*/type 2> /dev/null | wc -l)" -gt 0 ]
+	then
+		TempArrayIndex=()
+		TempArrayVal=()
+		for zone in /sys/class/thermal/thermal_zone*/
+		do
+			if [[ -f "${zone}/type" ]] && [[ -f "${zone}/temp" ]]
 			then
-				SensorsArray=()
-				while IFS='' read -r line; do SensorsArray+=("$line"); done < <(sensors -A)
-				for i in "${SensorsArray[@]}"
+				type_value=$(<"${zone}/type")
+				temp_value=$(<"${zone}/temp")
+				if [[ -n $type_value ]]
+				then
+					TempArrayIndex+=("$type_value")
+				fi
+				if [[ $temp_value =~ ^[0-9]+$ ]]
+				then
+					TempArrayVal+=("$temp_value")
+				else
+					TempArrayVal+=("0")
+				fi
+			fi
+		done
+		TempNameCnt=0
+		for TempName in "${TempArrayIndex[@]}"
+		do
+			TempArray[$TempName]=${TempArray[$TempName]:-0}
+			TempArrayCnt[$TempName]=${TempArrayCnt[$TempName]:-0}
+
+			if [[ ${TempArrayVal[$TempNameCnt]} =~ ^[0-9]+$ ]]
+			then
+				TempArray[$TempName]=$((${TempArray[$TempName]} + ${TempArrayVal[$TempNameCnt]}))
+				TempArrayCnt[$TempName]=$((TempArrayCnt[$TempName] + 1))
+			fi
+			TempNameCnt=$((TempNameCnt + 1))
+		done
+		if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Temperature thermal_zone: ${TempArray[*]}" >> "$ScriptPath"/debug.log; fi
+	else
+		if command -v "sensors" > /dev/null 2>&1
+		then
+			SensorsArray=()
+			while IFS='' read -r line; do SensorsArray+=("$line"); done < <(sensors -A)
+			for i in "${SensorsArray[@]}"
+			do
+				if [ -n "$i" ]
+				then
+					if [[ "$i" != *":"* ]] && [[ "$i" != *"="* ]]
+					then
+						SensorsCat="$i"
+					else
+						if [[ "$i" == *":"* ]] && [[ "$i" == *"°C"* ]]
+						then
+							TempName="$SensorsCat|"$(echo "$i" | awk -F"°C" '{print $1}' | awk -F":" '{print $1}' | sed 's/ /_/g' | xargs)
+							TempVal=$(echo "$i" | awk -F"°C" '{print $1}' | awk -F":" '{print $2}' | sed 's/ //g' | awk '{printf "%18.3f",$1}' | sed -e 's/\.//g' | xargs)
+							TempArray[$TempName]=$((${TempArray[$TempName]} + TempVal))
+							TempArrayCnt[$TempName]=$((TempArrayCnt[$TempName] + 1))
+						fi
+					fi
+				fi
+			done
+			if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Temperature sensors: ${TempArray[*]}" >> "$ScriptPath"/debug.log; fi
+		else
+			if command -v "ipmitool" > /dev/null 2>&1
+			then
+				IPMIArray=()
+				while IFS='' read -r line; do IPMIArray+=("$line"); done < <(timeout -s 9 3 ipmitool sdr type Temperature)
+				for i in "${IPMIArray[@]}"
 				do
 					if [ -n "$i" ]
 					then
-						if [[ "$i" != *":"* ]] && [[ "$i" != *"="* ]]
+						if [[ "$i" == *"degrees"* ]]
 						then
-							SensorsCat="$i"
-						else
-							if [[ "$i" == *":"* ]] && [[ "$i" == *"°C"* ]]
-							then
-								TempName="$SensorsCat|"$(echo "$i" | awk -F"°C" '{print $1}' | awk -F":" '{print $1}' | sed 's/ /_/g' | xargs)
-								TempVal=$(echo "$i" | awk -F"°C" '{print $1}' | awk -F":" '{print $2}' | sed 's/ //g' | awk '{printf "%18.3f",$1}' | sed -e 's/\.//g' | xargs)
-								TempArray[$TempName]=$((${TempArray[$TempName]} + TempVal))
-								TempArrayCnt[$TempName]=$((TempArrayCnt[$TempName] + 1))
-							fi
+							TempName=$(echo "$i" | awk -F"|" '{print $1}' | xargs | sed 's/ /_/g')
+							TempVal=$(echo "$i" | awk -F"|" '{print $NF}' | awk -F"degrees" '{print $1}' | sed 's/ //g' | awk '{printf "%18.3f",$1}' | sed -e 's/\.//g' | xargs)
+							TempArray[$TempName]=$((${TempArray[$TempName]} + TempVal))
+							TempArrayCnt[$TempName]=$((TempArrayCnt[$TempName] + 1))
 						fi
 					fi
 				done
-				if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Temperature sensors: ${TempArray[*]}" >> "$ScriptPath"/debug.log; fi
-			else
-				if command -v "ipmitool" > /dev/null 2>&1
-				then
-					IPMIArray=()
-					while IFS='' read -r line; do IPMIArray+=("$line"); done < <(timeout -s 9 3 ipmitool sdr type Temperature)
-					for i in "${IPMIArray[@]}"
-					do
-						if [ -n "$i" ]
-						then
-							if [[ "$i" == *"degrees"* ]]
-							then
-								TempName=$(echo "$i" | awk -F"|" '{print $1}' | xargs | sed 's/ /_/g')
-								TempVal=$(echo "$i" | awk -F"|" '{print $NF}' | awk -F"degrees" '{print $1}' | sed 's/ //g' | awk '{printf "%18.3f",$1}' | sed -e 's/\.//g' | xargs)
-								TempArray[$TempName]=$((${TempArray[$TempName]} + TempVal))
-								TempArrayCnt[$TempName]=$((TempArrayCnt[$TempName] + 1))
-							fi
-						fi
-					done
-					if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Temperature ipmitool: ${TempArray[*]}" >> "$ScriptPath"/debug.log; fi
-				fi
+				if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Temperature ipmitool: ${TempArray[*]}" >> "$ScriptPath"/debug.log; fi
 			fi
 		fi
 	fi
@@ -600,46 +414,37 @@ User=$(whoami)
 
 # Check if system requires reboot
 RequiresReboot=0
-if [ "$OS" = "FreeBSD" ]; then
-	# FreeBSD reboot check (simplified)
-	if [ -e /var/run/reboot-required ]; then
-		RequiresReboot=1
-	fi
-else
-	# Linux reboot check
-	if [ -f /var/run/reboot-required ]; then
-		RequiresReboot=1
-	fi
-	
-	# Check if system is CentOS/RHEL and needs reboot
-	if [ -f /etc/redhat-release ] && ! [[ "$(cat /etc/redhat-release)" == "CloudLinux release 8."* ]]; then
-		if command -v "needs-restarting" > /dev/null 2>&1; then
-			if timeout -s 9 5 needs-restarting -r | grep -q 'Reboot is required'; then
-				RequiresReboot=1
-			fi
-		fi
-	fi
+if [ -f  /var/run/reboot-required ]
+then
+	RequiresReboot=1
 fi
 
 # Operating System
-if [ "$OS" = "FreeBSD" ]; then
-	# FreeBSD OS version
-	OS="FreeBSD $(sysctl -n kern.osrelease)"
+# Check via lsb_release if possible
+if command -v "lsb_release" > /dev/null 2>&1
+then
+	OS=$(lsb_release -s -d)
+# Check if it's Debian
+elif [ -f /etc/debian_version ]
+then
+	OS="Debian $(cat /etc/debian_version)"
+# Check if it's CentOS/Fedora
+elif [ -f /etc/redhat-release ]
+then
+	OS=$(cat /etc/redhat-release)
+
+ 	# Check if system is CloudLinux release 8 (CL8 will only output "This system is receiving updates from CloudLinux Network server.")
+  	if [[ "$OS" != "CloudLinux release 8."* ]]
+	then
+		# Check if system requires reboot (Only supported in CentOS/RHEL 7 and later, with yum-utils installed)
+		if timeout -s 9 5 needs-restarting -r | grep -q 'Reboot is required'
+		then
+			RequiresReboot=1
+		fi
+  	fi
+# If all else fails
 else
-	# Linux OS detection
-	# Check via lsb_release if possible
-	if command -v "lsb_release" > /dev/null 2>&1; then
-		OS=$(lsb_release -s -d)
-	# Check if it's Debian
-	elif [ -f /etc/debian_version ]; then
-		OS="Debian $(cat /etc/debian_version)"
-	# Check if it's CentOS/Fedora
-	elif [ -f /etc/redhat-release ]; then
-		OS=$(cat /etc/redhat-release)
-	# If all else fails
-	else
-		OS="$(uname -s)"
-	fi
+	OS="$(uname -s)"
 fi
 OS=$(echo -ne "$OS" | base64 | tr -d '\n\r\t ')
 
@@ -650,60 +455,36 @@ Kernel=$(uname -r | base64 | tr -d '\n\r\t ')
 Hostname=$(uname -n | base64 | tr -d '\n\r\t ')
 
 # Server uptime
-if [ "$OS" = "FreeBSD" ]; then
-	# FreeBSD uptime
-	Uptime=$(sysctl -n kern.boottime | awk '{print time()-$4}' | awk '{printf "%18.0f",$1}' | xargs)
-else
-	# Linux uptime
-	Uptime=$(awk '{print $1}' < /proc/uptime | awk '{printf "%18.0f",$1}' | xargs)
-fi
+Uptime=$(awk '{print $1}' < /proc/uptime | awk '{printf "%18.0f",$1}' | xargs)
 
 if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) User: $User OS: $OS Kernel: $Kernel Hostname: $Hostname Uptime: $Uptime" >> "$ScriptPath"/debug.log; fi
 
-# CPU model and information
-if [ "$OS" = "FreeBSD" ]; then
-	# FreeBSD CPU info
-	CPUModel=$(sysctl -n hw.model)
-	CPUModel=$(echo -ne "$CPUModel" | base64 | tr -d '\n\r\t ')
-	
-	# CPU sockets, cores, threads
-	CPUSockets=1  # Default for FreeBSD
-	CPUCores=$(sysctl -n hw.ncpu)
-	CPUThreads=1  # Default for FreeBSD
-	
-	# CPU clock speed
-	if [ -z "$tCPUSpeed" ] || [ "$tCPUSpeed" -eq 0 ]; then
-		CPUSpeed=$(sysctl -n dev.cpu.0.freq 2>/dev/null || echo 0)
-	else
-		CPUSpeed=$(echo | awk "{print $tCPUSpeed / $CPUCores / $X}" | awk '{printf "%18.0f",$1}' | xargs)
-	fi
+# lscpu
+lscpu=$(lscpu)
+
+# CPU model
+CPUModel=$(grep -m1 -E 'model name|cpu model' /proc/cpuinfo | awk -F": " '{print $NF}' | xargs)
+if [ -z "$CPUModel" ]
+then
+	CPUModel=$(echo "$lscpu" | grep "^Model name:" | awk -F": " '{print $NF}' | xargs)
+fi
+CPUModel=$(echo -ne "$CPUModel" | base64 | tr -d '\n\r\t ')
+
+# CPU sockets
+CPUSockets=$(grep -i "physical id" /proc/cpuinfo | sort -u | wc -l)
+
+# CPU cores
+CPUCores=$(echo "$lscpu" | grep "^CPU(s):" | awk '{print $(NF)}' | xargs)
+
+# CPU threads
+CPUThreads=$(echo "$lscpu" | grep "^Thread(s) per core:" | awk '{print $(NF)}' | xargs)
+
+# CPU clock speed
+if [ -z "$tCPUSpeed" ] || [ "$tCPUSpeed" -eq 0 ]
+then
+	CPUSpeed=$(echo "$lscpu" | grep "^CPU max MHz" | awk '{print $NF}' | awk '{printf "%18.0f",$1}' | xargs)
 else
-	# Linux CPU info
-	# lscpu
-	lscpu=$(lscpu)
-
-	# CPU model
-	CPUModel=$(grep -m1 -E 'model name|cpu model' /proc/cpuinfo | awk -F": " '{print $NF}' | xargs)
-	if [ -z "$CPUModel" ]; then
-		CPUModel=$(echo "$lscpu" | grep "^Model name:" | awk -F": " '{print $NF}' | xargs)
-	fi
-	CPUModel=$(echo -ne "$CPUModel" | base64 | tr -d '\n\r\t ')
-
-	# CPU sockets
-	CPUSockets=$(grep -i "physical id" /proc/cpuinfo | sort -u | wc -l)
-
-	# CPU cores
-	CPUCores=$(echo "$lscpu" | grep "^CPU(s):" | awk '{print $(NF)}' | xargs)
-
-	# CPU threads
-	CPUThreads=$(echo "$lscpu" | grep "^Thread(s) per core:" | awk '{print $(NF)}' | xargs)
-
-	# CPU clock speed
-	if [ -z "$tCPUSpeed" ] || [ "$tCPUSpeed" -eq 0 ]; then
-		CPUSpeed=$(echo "$lscpu" | grep "^CPU max MHz" | awk '{print $NF}' | awk '{printf "%18.0f",$1}' | xargs)
-	else
-		CPUSpeed=$(echo | awk "{print $tCPUSpeed / $CPUCores / $X}" | awk '{printf "%18.0f",$1}' | xargs)
-	fi
+	CPUSpeed=$(echo | awk "{print $tCPUSpeed / $CPUCores / $X}" | awk '{printf "%18.0f",$1}' | xargs)
 fi
 
 # Average CPU usage
@@ -728,90 +509,55 @@ loadavg15=$(echo | awk "{print $tloadavg15 / $X}")
 
 if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) CPU Model: $CPUModel Sockets: $CPUSockets Cores: $CPUCores Threads: $CPUThreads Speed: $CPUSpeed CPU: $CPU IO wait: $CPUwa Steal time: $CPUst User time: $CPUus System time: $CPUsy Load: $loadavg1 $loadavg5 $loadavg15" >> "$ScriptPath"/debug.log; fi
 
-# RAM information
-if [ "$OS" = "FreeBSD" ]; then
-	# FreeBSD RAM info
-	RAMSize=$(sysctl -n hw.physmem | awk '{print $1 / 1024}' | awk '{printf "%18.0f",$1}')
-	
-	# RAM Usage already calculated in loop
-	
-	# RAM swap size and usage
-	swapInfo=$(swapinfo | grep "Total" | awk '{print $2}')
-	if [ -z "$swapInfo" ]; then
-		RAMSwapSize=0
-	else
-		RAMSwapSize=$swapInfo
-	fi
-	
-	# RAMSwap already calculated in loop
-	
-	# FreeBSD doesn't separate buffers and cache in the same way as Linux
-	RAMBuff=0
-	RAMCache=0
+# RAM size
+RAMSize=$(grep ^MemTotal: /proc/meminfo | awk '{print $2}')
+
+# RAM Usage
+RAM=$(echo | awk "{print $tRAM / $X}")
+
+# RAM swap size
+RAMSwapSize=$(grep "^SwapTotal:" /proc/meminfo | awk '{print $2}')
+
+# RAM swap usage
+if [ "$RAMSwapSize" -gt 0 ]
+then
+	RAMSwap=$(echo | awk "{print $tRAMSwap / $X}")
 else
-	# Linux RAM info
-	# RAM size
-	RAMSize=$(grep ^MemTotal: /proc/meminfo | awk '{print $2}')
-
-	# RAM Usage already calculated in loop
-
-	# RAM swap size
-	RAMSwapSize=$(grep "^SwapTotal:" /proc/meminfo | awk '{print $2}')
-
-	# RAM swap usage already calculated in loop
-	
-	# RAM buffers and cache usage already calculated in loop
+	RAMSwap=0
 fi
+
+# RAM buffers usage
+RAMBuff=$(echo | awk "{print $tRAMBuff / $X}")
+
+# RAM cache usage
+RAMCache=$(echo | awk "{print $tRAMCache / $X}")
 
 if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) RAM Size: $RAMSize Usage: $RAM Swap Size: $RAMSwapSize Usage: $RAMSwap Buffers: $RAMBuff Cache: $RAMCache" >> "$ScriptPath"/debug.log; fi
 
-# Disks information
-if [ "$OS" = "FreeBSD" ]; then
-	# FreeBSD disk inodes
-	INODEs=$(echo -ne "$(df -Ti | sed 1d | grep -v -E 'tmpfs|devfs' | awk '{print $(NF)","$3","$4","$5";"}')" | tr -d '\n\r\t ' | base64 | tr -d '\n\r\t ')
-	
-	# FreeBSD disk I/O
-	IOPS=""
-	current_iostat=$(iostat -x)
-	for i in "${!vDISKs[@]}"; do
-		current_read=$(echo "$current_iostat" | grep "^${vDISKs[$i]}" | awk '{print $4}')
-		current_write=$(echo "$current_iostat" | grep "^${vDISKs[$i]}" | awk '{print $5}')
-		
-		# Calculate read/write rates - FreeBSD iostat works differently
-		IOPSRead[$i]=$(echo | awk "{print ($current_read - ${IOPSRead[$i]:-0}) * 512 / $tTIMEDIFF}" 2>/dev/null || echo 0)
-		IOPSRead[$i]=$(echo "${IOPSRead[$i]}" | awk '{printf "%18.0f",$1}' | xargs)
-		IOPSWrite[$i]=$(echo | awk "{print ($current_write - ${IOPSWrite[$i]:-0}) * 512 / $tTIMEDIFF}" 2>/dev/null || echo 0)
-		IOPSWrite[$i]=$(echo "${IOPSWrite[$i]}" | awk '{printf "%18.0f",$1}' | xargs)
-		
-		IOPS="$IOPS$i,${IOPSRead[$i]},${IOPSWrite[$i]};"
-	done
-	IOPS=$(echo -ne "$IOPS" | base64 | tr -d '\n\r\t ')
-else
-	# Linux disk inodes
-	INODEs=$(echo -ne "$(timeout 3 df -Ti | sed 1d | grep -v -E 'tmpfs' | awk '{print $(NF)","$3","$4","$5";"}')" | tr -d '\n\r\t ' | base64 | tr -d '\n\r\t ')
+# Disks inodes
+INODEs=$(echo -ne "$(timeout 3 df -Ti | sed 1d | grep -v -E 'tmpfs' | awk '{print $(NF)","$3","$4","$5";"}')" | tr -d '\n\r\t ' | base64 | tr -d '\n\r\t ')
 
-	# Linux disk I/O
-	IOPS=""
-	diskstats=$(cat /proc/diskstats)
-	for i in "${!vDISKs[@]}"; do
-		IOPSRead[$i]=$(echo | awk "{print $(echo | awk "{print $(echo "$diskstats" | grep -w "${vDISKs[$i]}" | awk '{print $6}') - ${IOPSRead[$i]}}" 2> /dev/null) * 512 / $tTIMEDIFF}" 2> /dev/null)
-		IOPSRead[$i]=$(echo "${IOPSRead[$i]}" | awk '{printf "%18.0f",$1}' | xargs)
-		IOPSWrite[$i]=$(echo | awk "{print $(echo | awk "{print $(echo "$diskstats" | grep -w "${vDISKs[$i]}" | awk '{print $10}') - ${IOPSWrite[$i]}}" 2> /dev/null) * 512 / $tTIMEDIFF}" 2> /dev/null)
-		IOPSWrite[$i]=$(echo "${IOPSWrite[$i]}" | awk '{printf "%18.0f",$1}' | xargs)
-		IOPS="$IOPS$i,${IOPSRead[$i]},${IOPSWrite[$i]};"
-	done
-	IOPS=$(echo -ne "$IOPS" | base64 | tr -d '\n\r\t ')
-fi
+# Disks IOPS
+IOPS=""
+diskstats=$(cat /proc/diskstats)
+for i in "${!vDISKs[@]}"
+do
+	IOPSRead[$i]=$(echo | awk "{print $(echo | awk "{print $(echo "$diskstats" | grep -w "${vDISKs[$i]}" | awk '{print $6}') - ${IOPSRead[$i]}}" 2> /dev/null) * 512 / $tTIMEDIFF}" 2> /dev/null)
+	IOPSRead[$i]=$(echo "${IOPSRead[$i]}" | awk '{printf "%18.0f",$1}' | xargs)
+	IOPSWrite[$i]=$(echo | awk "{print $(echo | awk "{print $(echo "$diskstats" | grep -w "${vDISKs[$i]}" | awk '{print $10}') - ${IOPSWrite[$i]}}" 2> /dev/null) * 512 / $tTIMEDIFF}" 2> /dev/null)
+	IOPSWrite[$i]=$(echo "${IOPSWrite[$i]}" | awk '{printf "%18.0f",$1}' | xargs)
+	IOPS="$IOPS$i,${IOPSRead[$i]},${IOPSWrite[$i]};"
+done
+IOPS=$(echo -ne "$IOPS" | base64 | tr -d '\n\r\t ')
 
-if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Disks: $DISKs Inodes: $INODEs IOPS: $IOPS" >> "$ScriptPath"/debug.log; fi
+if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) lsblk: $(lsblk -l | base64 | tr -d '\n\r\t ') Disks: $DISKs Inodes: $INODEs IOPS: $IOPS" >> "$ScriptPath"/debug.log; fi
 
-# Network usage and IP addresses
+# Total network usage and IP addresses
 RX=0
 TX=0
 NICS=""
 IPv4=""
 IPv6=""
-
 for NIC in "${NetworkInterfacesArray[@]}"
 do
 	# Individual NIC network usage
@@ -820,19 +566,10 @@ do
 	TX=$(echo | awk "{print ${tTX[$NIC]} / $X}")
 	TX=$(echo "$TX" | awk '{printf "%18.0f",$1}' | xargs)
 	NICS="$NICS$NIC,$RX,$TX;"
-	
 	# Individual NIC IP addresses
-	if [ "$OS" = "FreeBSD" ]; then
-		# FreeBSD IP address collection
-		IPv4="$IPv4$NIC,$(ifconfig "$NIC" | grep 'inet ' | awk '{print $2}' | xargs | sed 's/ /,/g');"
-		IPv6="$IPv6$NIC,$(ifconfig "$NIC" | grep 'inet6' | grep -v '%' | awk '{print $2}' | xargs | sed 's/ /,/g');"
-	else
-		# Linux IP address collection
-		IPv4="$IPv4$NIC,$(ip -4 addr show "$NIC" 2>/dev/null | grep -oP 'inet \K[\d.]+' | xargs | sed 's/ /,/g');"
-		IPv6="$IPv6$NIC,$(ip -6 addr show "$NIC" 2>/dev/null | grep -w "global" | grep -oP 'inet6 \K[0-9a-fA-F:]+' | xargs | sed 's/ /,/g');"
-	fi
+	IPv4="$IPv4$NIC,$(ip -4 addr show "$NIC" | grep -oP 'inet \K[\d.]+' | xargs | sed 's/ /,/g');"
+	IPv6="$IPv6$NIC,$(ip -6 addr show "$NIC" | grep -w "global" | grep -oP 'inet6 \K[0-9a-fA-F:]+' | xargs | sed 's/ /,/g');"
 done
-
 NICS=$(echo -ne "$NICS" | base64 | tr -d '\n\r\t ')
 IPv4=$(echo -ne "$IPv4" | base64 | tr -d '\n\r\t ')
 IPv6=$(echo -ne "$IPv6" | base64 | tr -d '\n\r\t ')
@@ -891,81 +628,41 @@ if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) Services: $SR
 # Check Software RAID
 RAID=""
 ZP=""
-if [ "$OS" = "FreeBSD" ]; then
-	# FreeBSD RAID check
-	dfPB1=$(df -kP 2>/dev/null)
-	declare -A zpooldiskusage
-	
-	if [ "$CheckSoftRAID" -gt 0 ]
-	then
-		# Check for gmirror (FreeBSD's software RAID)
-		if [ -x "$(command -v gmirror)" ]; then
-			gmirror_status=$(gmirror status 2>/dev/null)
-			if [ -n "$gmirror_status" ]; then
-				for mirror in $(gmirror status | grep -v "Name" | awk '{print $1}'); do
-					gmirror_info=$(gmirror status "$mirror" 2>/dev/null)
-					mnt=$(mount | grep "/dev/mirror/$mirror" | awk '{print $3}')
-					if [ -n "$mnt" ]; then
-						gmirror_info=$(echo -ne "$gmirror_info" | base64 | tr -d '\n\r\t ')
-						RAID="$RAID$mnt,/dev/mirror/$mirror,$gmirror_info;"
-					fi
-				done
-			fi
+dfPB1=$(timeout 3 df -PB1 2>/dev/null)
+mdstat=$(cat /proc/mdstat 2>/dev/null)
+declare -A zpooldiskusage
+if [ "$CheckSoftRAID" -gt 0 ]
+then
+	for i in $(echo -ne "$dfPB1" | awk '$1 ~ /\// {print}' | awk '{print $1}')
+	do
+		mdadm=$(mdadm -D "$i" 2>/dev/null)
+		# DEBUG
+		if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) mdadm -D $i:\n$mdadm" >> "$ScriptPath"/debug.log; fi
+		if [ -n "$mdadm" ]
+		then
+			mnt=$(echo -ne "$dfPB1" | grep "$i " | awk '{print $(NF)}')
+			RAID="$RAID$mnt,$i,$mdadm;"
 		fi
-		
-		# Check for ZFS pools
-		if [ -x "$(command -v zpool)" ]; then
-			zpoolsoverall=$(zpool status 2>/dev/null)
-			if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) zpool status:\n$zpoolsoverall" >> "$ScriptPath"/debug.log; fi
-			if ! grep -q "no pools available" <<< "$zpoolsoverall"; then
-				zpools=()
-				while IFS= read -r line; do zpools+=("$line"); done < <(echo -ne "$zpoolsoverall" 2>/dev/null | grep "pool: " | awk '{print $2}')
-				for i in "${zpools[@]}"; do
-					zpoolstatus=$(zpool status "$i" 2>/dev/null)
-					zpoolstatus=$(echo -ne "$zpoolstatus" | base64 | tr -d '\n\r\t ')
-					mnt=$(zfs get -H mountpoint "$i" 2>/dev/null | awk '{print $3}')
-					ZP="$ZP$mnt,$i,$zpoolstatus;"
-					zpooldiskusage[$mnt]=$(zfs get -H -o value -p used,avail "$i" | xargs | awk '{printf "%.0f %.0f %.0f", $1+$2, $1, $2}')
-				done
-			fi
-		fi
-	fi
-else
-	# Linux RAID check
-	dfPB1=$(timeout 3 df -PB1 2>/dev/null)
-	mdstat=$(cat /proc/mdstat 2>/dev/null)
-	declare -A zpooldiskusage
-	
-	if [ "$CheckSoftRAID" -gt 0 ]
+	done
+	if [ -x "$(command -v zpool)" ]
 	then
-		for i in $(echo -ne "$dfPB1" | awk '$1 ~ /\// {print}' | awk '{print $1}'); do
-			mdadm=$(mdadm -D "$i" 2>/dev/null)
-			# DEBUG
-			if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) mdadm -D $i:\n$mdadm" >> "$ScriptPath"/debug.log; fi
-			if [ -n "$mdadm" ]; then
-				mnt=$(echo -ne "$dfPB1" | grep "$i " | awk '{print $(NF)}')
-				RAID="$RAID$mnt,$i,$mdadm;"
-			fi
-		done
-		
-		if [ -x "$(command -v zpool)" ]; then
-			zpoolsoverall=$(zpool status 2>/dev/null)
-			if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) zpool status:\n$zpoolsoverall" >> "$ScriptPath"/debug.log; fi
-			if ! grep -q "no pools available" <<< "$zpoolsoverall"; then
-				zpools=()
-				while IFS= read -r line; do zpools+=("$line"); done < <(echo -ne "$zpoolsoverall"  2>/dev/null | grep "pool: " | awk '{print $2}')
-				for i in "${zpools[@]}"; do
-					zpoolstatus=$(zpool status "$i" 2>/dev/null)
-					zpoolstatus=$(echo -ne "$zpoolstatus" | base64 | tr -d '\n\r\t ')
-					mnt=$(echo -ne "$dfPB1" | grep -E "$i[ /]" | head -n 1 | awk '{print $(NF)}')
-					ZP="$ZP$mnt,$i,$zpoolstatus;"
-					zpooldiskusage[$mnt]=$(zfs get -H -o value -p used,avail "$i" | xargs | awk '{printf "%.0f %.0f %.0f", $1+$2, $1, $2}')
-				done
-			fi
+		zpoolsoverall=$(zpool status 2>/dev/null)
+		if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) zpool status:\n$zpoolsoverall" >> "$ScriptPath"/debug.log; fi
+		if ! grep -q "no pools available" <<< "$zpoolsoverall"
+		then
+			zpools=()
+			while IFS= read -r line; do zpools+=("$line"); done < <(echo -ne "$zpoolsoverall"  2>/dev/null | grep "pool: " | awk '{print $2}')
+			for i in "${zpools[@]}"
+			do
+				zpoolstatus=$(zpool status "$i" 2>/dev/null)
+				zpoolstatus=$(echo -ne "$zpoolstatus" | base64 | tr -d '\n\r\t ')
+				mnt=$(echo -ne "$dfPB1" | grep -E "$i[ /]" | head -n 1 | awk '{print $(NF)}')
+				ZP="$ZP$mnt,$i,$zpoolstatus;"
+				zpooldiskusage[$mnt]=$(zfs get -H -o value -p used,avail "$i" | xargs | awk '{printf "%.0f %.0f %.0f", $1+$2, $1, $2}')
+			done
 		fi
 	fi
 fi
-
 RAID=$(echo -ne "$RAID" | base64 | tr -d '\n\r\t ')
 ZP=$(echo -ne "$ZP" | base64 | tr -d '\n\r\t ')
 
@@ -973,17 +670,11 @@ if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) RAID: $RAID Z
 
 # Disks usage
 DISKs=""
-if [ "$OS" = "FreeBSD" ]; then
-	# FreeBSD disk usage
-	IFS=$'\n' read -d '' -r -a DISKsArray < <(df -kTP | sed 1d | grep -v -E 'tmpfs|devfs' | awk '{print $(NF)","$2","$3*1024","$4*1024","$5";"}')
-else
-	# Linux disk usage
-	IFS=$'\n' read -d '' -r -a DISKsArray < <(timeout 3 df -TPB1 | sed 1d | grep -v -E 'tmpfs' | awk '{print $(NF)","$2","$3","$4","$5";"}')
-fi
-
+IFS=$'\n' read -d '' -r -a DISKsArray < <(timeout 3 df -TPB1 | sed 1d | grep -v -E 'tmpfs' | awk '{print $(NF)","$2","$3","$4","$5";"}')
 for i in "${DISKsArray[@]}"; do
     IFS=',' read -r mount_point filesystem_type total_size used_size available_size <<< "$i"
-	if [ -n "${zpooldiskusage[$mount_point]}" ]; then
+	if [ -n "${zpooldiskusage[$mount_point]}" ]
+	then
 		IFS=' ' read -r zpool_total zpool_allocated zpool_free <<< "${zpooldiskusage[$mount_point]}"
 		total_size=$zpool_total
 		used_size=$zpool_allocated
@@ -1001,110 +692,69 @@ if [ "$CheckDriveHealth" -gt 0 ]
 then
 	if [ -x "$(command -v smartctl)" ] #Using S.M.A.R.T. (for regular HDD/SSD)
 	then
-		if [ "$OS" = "FreeBSD" ]; then
-			# FreeBSD disk devices
-			disk_devices=$(sysctl -n kern.disks | tr ' ' '\n' | grep -v '^cd' | grep -v '^fd')
-			for i in $disk_devices; do
-				DHealth=$(smartctl -A "/dev/$i" 2>/dev/null)
-				if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) smartctl -A /dev/$i:\n$DHealth" >> "$ScriptPath"/debug.log; fi
-				if grep -q 'Attribute' <<< "$DHealth"
+		for i in $(lsblk -lp | grep ' disk' | awk '{print $1}')
+		do
+			DHealth=$(smartctl -A "$i")
+			if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) smartctl -A $i:\n$DHealth" >> "$ScriptPath"/debug.log; fi
+			if grep -q 'Attribute' <<< "$DHealth"
+			then
+				DHealth=$(smartctl -H "$i")"\n$DHealth"
+				DHealth=$(echo -ne "$DHealth" | base64 | tr -d '\n\r\t ')
+				DInfo="$(smartctl -i "$i")"
+				DModel="$(echo "$DInfo" | grep -i "Device Model:" | awk -F ':' '{print $2}' | xargs)"
+				DSerial="$(echo "$DInfo" | grep -i "Serial Number:" | awk -F ':' '{print $2}' | xargs)"
+				i=${i##*/}
+				DH="$DH""1,$i,$DHealth,$DModel,$DSerial;"
+			else # If initial read has failed, see if drives are behind hardware raid
+				MegaRaid=()
+				while IFS='' read -r line; do MegaRaid+=("$line"); done < <(smartctl --scan | grep megaraid | awk '{print $(3)}')
+				if [ ${#MegaRaid[@]} -gt 0 ]
 				then
-					DHealth=$(smartctl -H "/dev/$i")"\n$DHealth"
-					DHealth=$(echo -ne "$DHealth" | base64 | tr -d '\n\r\t ')
-					DInfo="$(smartctl -i "/dev/$i")"
-					DModel="$(echo "$DInfo" | grep -i "Device Model:" | awk -F ':' '{print $2}' | xargs)"
-					DSerial="$(echo "$DInfo" | grep -i "Serial Number:" | awk -F ':' '{print $2}' | xargs)"
-					DH="$DH""1,$i,$DHealth,$DModel,$DSerial;"
+					MegaRaidN=0
+					for MegaRaidID in "${MegaRaid[@]}"
+					do
+						DHealth=$(smartctl -A -d "$MegaRaidID" "$i")
+						if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) smartctl -A -d $MegaRaidID $i:\n$DHealth" >> "$ScriptPath"/debug.log; fi
+						if grep -q 'Attribute' <<< "$DHealth"
+						then
+							MegaRaidN=$((MegaRaidN + 1))
+							DHealth=$(smartctl -H -d "$MegaRaidID" "$i")"\n$DHealth"
+							DHealth=$(echo -ne "$DHealth" | base64 | tr -d '\n\r\t ')
+							DInfo="$(smartctl -i -d "$MegaRaidID" "$i")"
+							DModel="$(echo "$DInfo" | grep -i "Device Model:" | awk -F ':' '{print $2}' | xargs)"
+							DSerial="$(echo "$DInfo" | grep -i "Serial Number:" | awk -F ':' '{print $2}' | xargs)"
+							ii=${i##*/}
+							DH="$DH""1,${ii}[$MegaRaidN],$DHealth,$DModel,$DSerial;"
+						fi
+					done
+					break
 				fi
-			done
-		else
-			# Linux disk devices
-			for i in $(lsblk -lp | grep ' disk' | awk '{print $1}')
-			do
-				DHealth=$(smartctl -A "$i")
-				if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) smartctl -A $i:\n$DHealth" >> "$ScriptPath"/debug.log; fi
-				if grep -q 'Attribute' <<< "$DHealth"
-				then
-					DHealth=$(smartctl -H "$i")"\n$DHealth"
-					DHealth=$(echo -ne "$DHealth" | base64 | tr -d '\n\r\t ')
-					DInfo="$(smartctl -i "$i")"
-					DModel="$(echo "$DInfo" | grep -i "Device Model:" | awk -F ':' '{print $2}' | xargs)"
-					DSerial="$(echo "$DInfo" | grep -i "Serial Number:" | awk -F ':' '{print $2}' | xargs)"
-					i=${i##*/}
-					DH="$DH""1,$i,$DHealth,$DModel,$DSerial;"
-				else # If initial read has failed, see if drives are behind hardware raid
-					MegaRaid=()
-					while IFS='' read -r line; do MegaRaid+=("$line"); done < <(smartctl --scan | grep megaraid | awk '{print $(3)}')
-					if [ ${#MegaRaid[@]} -gt 0 ]
-					then
-						MegaRaidN=0
-						for MegaRaidID in "${MegaRaid[@]}"
-						do
-							DHealth=$(smartctl -A -d "$MegaRaidID" "$i")
-							if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) smartctl -A -d $MegaRaidID $i:\n$DHealth" >> "$ScriptPath"/debug.log; fi
-							if grep -q 'Attribute' <<< "$DHealth"
-							then
-								MegaRaidN=$((MegaRaidN + 1))
-								DHealth=$(smartctl -H -d "$MegaRaidID" "$i")"\n$DHealth"
-								DHealth=$(echo -ne "$DHealth" | base64 | tr -d '\n\r\t ')
-								DInfo="$(smartctl -i -d "$MegaRaidID" "$i")"
-								DModel="$(echo "$DInfo" | grep -i "Device Model:" | awk -F ':' '{print $2}' | xargs)"
-								DSerial="$(echo "$DInfo" | grep -i "Serial Number:" | awk -F ':' '{print $2}' | xargs)"
-								ii=${i##*/}
-								DH="$DH""1,${ii}[$MegaRaidN],$DHealth,$DModel,$DSerial;"
-							fi
-						done
-						break
-					fi
-				fi
-			done
-		fi
+			fi
+		done
 	fi
-	
 	if [ -x "$(command -v nvme)" ] #Using nvme-cli (for NVMe)
 	then
 		NVMeList="$(nvme list)"
 		if [ "$DEBUG" -eq 1 ]; then echo -e "$ScriptStartTime-$(date +%T]) NVMe List:\n$NVMeList" >> "$ScriptPath"/debug.log; fi
-		
-		if [ "$OS" = "FreeBSD" ]; then
-			# FreeBSD NVMe devices
-			nvme_devices=$(ls -1 /dev/nvme* 2>/dev/null | grep -v 'ns$')
-			for i in $nvme_devices; do
-				DHealth=$(nvme smart-log "$i" 2>/dev/null)
-				if grep -q 'NVME' <<< "$DHealth"; then
-					if [ -x "$(command -v smartctl)" ]; then
-						ii=${i##*/}
-						DHealth=$(smartctl -H "$i")"\n$DHealth"
-					fi
-					DHealth=$(echo -ne "$DHealth" | base64 | tr -d '\n\r\t ')
-					DModel="NVMe Controller"
-					DSerial="Unknown"
-					i=${i##*/}
-					DH="$DH""2,$i,$DHealth,$DModel,$DSerial;"
-				fi
-			done
-		else
-			# Linux NVMe devices
-			for i in $(lsblk -lp | grep ' disk' | awk '{print $1}')
-			do
-				DHealth=$(nvme smart-log "$i")
-				if grep -q 'NVME' <<< "$DHealth"
+		for i in $(lsblk -lp | grep ' disk' | awk '{print $1}')
+		do
+			DHealth=$(nvme smart-log "$i")
+			if grep -q 'NVME' <<< "$DHealth"
+			then
+				if [ -x "$(command -v smartctl)" ]
 				then
-					if [ -x "$(command -v smartctl)" ]
-					then
-						ii=${i##*/}
-						DHealth=$(smartctl -H /dev/"${ii%??}")"\n$DHealth"
-					fi
-					DHealth=$(echo -ne "$DHealth" | base64 | tr -d '\n\r\t ')
-					MODELCOL=$(echo "$NVMeList" | grep "^Node" | tr -s ' ' | tr ' ' '\n' | grep -n -x "Model" | cut -d: -f1)
-					SNCOL=$(echo "$NVMeList" | grep "^Node" | tr -s ' ' | tr ' ' '\n' | grep -n -x "SN" | cut -d: -f1)
-					DModel="$(echo "$NVMeList" | grep "$i" | sed -E 's/[ ]{2,}/|/g' | awk -F '|' -v col="$MODELCOL" '{print $col}')"
-					DSerial="$(echo "$NVMeList" | grep "$i" | sed -E 's/[ ]{2,}/|/g' | awk -F '|' -v col="$SNCOL" '{print $col}')"
-					i=${i##*/}
-					DH="$DH""2,$i,$DHealth,$DModel,$DSerial;"
+					ii=${i##*/}
+					DHealth=$(smartctl -H /dev/"${ii%??}")"\n$DHealth"
 				fi
-			done
-		fi
+				DHealth=$(echo -ne "$DHealth" | base64 | tr -d '\n\r\t ')
+				MODELCOL=$(echo "$NVMeList" | grep "^Node" | tr -s ' ' | tr ' ' '\n' | grep -n -x "Model" | cut -d: -f1)
+				SNCOL=$(echo "$NVMeList" | grep "^Node" | tr -s ' ' | tr ' ' '\n' | grep -n -x "SN" | cut -d: -f1)
+				DModel="$(echo "$NVMeList" | grep "$i" | sed -E 's/[ ]{2,}/|/g' | awk -F '|' -v col="$MODELCOL" '{print $col}')"
+				DSerial="$(echo "$NVMeList" | grep "$i" | sed -E 's/[ ]{2,}/|/g' | awk -F '|' -v col="$SNCOL" '{print $col}')"
+				i=${i##*/}
+				DH="$DH""2,$i,$DHealth,$DModel,$DSerial;"
+			fi
+		done
 	fi
 fi
 DH=$(echo -ne "$DH" | base64 | tr -d '\n\r\t ')
